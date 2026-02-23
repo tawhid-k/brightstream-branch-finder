@@ -29,14 +29,12 @@ No installation required.
 open index.html
 ```
 
-**Option 2 — Local server (recommended, avoids browser fetch restrictions):**
+**Option 2 — Local server:**
 ```bash
-npx serve .
+npx serve .         # runs on http://localhost:3000
 # or
-python3 -m http.server 8080
+python3 -m http.server 8080  # runs on http://localhost:8080
 ```
-
-Then open `http://localhost:8080`.
 
 ## Assumptions & Decisions
 
