@@ -200,6 +200,34 @@ nav {
     font-weight: 500;
 }
 
+/* Pagination Controls */
+.pagination-container {
+    display: flex;
+    justify-content: center;
+    margin-top: 3rem;
+    width: 100%;
+}
+
+.pagination-controls {
+    display: flex;
+    gap: 1rem;
+    align-items: center;
+}
+
+.pagination-controls .btn-secondary {
+    padding: 0.8rem 2rem;
+    font-size: 1rem;
+    font-weight: 500;
+}
+
+.pagination-controls .btn-secondary:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    background: var(--cream);
+    color: var(--slate);
+    border-color: rgba(100, 116, 139, 0.2);
+}
+
 /* View Toggle */
 .view-toggle {
     display: flex;

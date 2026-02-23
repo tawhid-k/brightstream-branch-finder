@@ -1,20 +1,11 @@
 const API_URL = 'https://cg.optimizely.com/content/v2?auth=iQEyR1jR1cBG5mnLQoRotCyNmKUgaO0DT5cRbJPKA3oZGGQo';
 
 
-const GRAPHQL_QUERY = `
-query {
-  Branch(limit: 100) {
-    items {
-      Name
-      City
-      Street
-      Coordinates
-      Phone
-      Email
-    }
-  }
-}
-`;
+// GRAPHQL_QUERY is now generated dynamically inside fetchBranches
+
+let currentPage = 1;
+const PAGE_SIZE = 30;
+let totalBranches = 0;
 
 let allBranches = [];
 let map = null;
@@ -62,12 +53,29 @@ function initMap() {
 async function fetchBranches() {
     resultsCount.textContent = "Loading branches...";
 
+    const skip = (currentPage - 1) * PAGE_SIZE;
+    const query = `
+    query {
+      Branch(limit: ${PAGE_SIZE}, skip: ${skip}) {
+        total
+        items {
+          Name
+          City
+          Street
+          Coordinates
+          Phone
+          Email
+        }
+      }
+    }
+    `;
+
     const response = await fetch(API_URL, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ query: GRAPHQL_QUERY })
+        body: JSON.stringify({ query: query })
     });
 
     if (!response.ok) {
@@ -82,8 +90,22 @@ async function fetchBranches() {
 
     if (data && data.Branch && data.Branch.items) {
         allBranches = data.Branch.items;
+        totalBranches = data.Branch.total || 0;
     } else {
         allBranches = [];
+        totalBranches = 0;
+    }
+
+    updatePaginationUI();
+}
+
+function updatePaginationUI() {
+    const prevBtn = document.getElementById('prevPageBtn');
+    const nextBtn = document.getElementById('nextPageBtn');
+
+    if (prevBtn && nextBtn) {
+        prevBtn.disabled = currentPage === 1;
+        nextBtn.disabled = (currentPage * PAGE_SIZE) >= totalBranches;
     }
 }
 
@@ -103,7 +125,14 @@ function renderBranches(branches) {
         return;
     }
 
-    resultsCount.textContent = `Showing ${branches.length} branch${branches.length !== 1 ? 'es' : ''}`;
+    const query = searchInput.value.toLowerCase().trim();
+    if (query || userLocation) {
+        resultsCount.textContent = `Showing ${branches.length} branch${branches.length !== 1 ? 'es' : ''}`;
+    } else {
+        const start = (currentPage - 1) * PAGE_SIZE + 1;
+        const end = Math.min(currentPage * PAGE_SIZE, totalBranches);
+        resultsCount.textContent = `Showing ${start}–${end} of ${totalBranches} branches`;
+    }
 
     branches.forEach(branch => {
         const card = document.createElement('div');
@@ -239,6 +268,31 @@ function setupEventListeners() {
 
     listViewBtn.addEventListener('click', () => switchView('list'));
     mapViewBtn.addEventListener('click', () => switchView('map'));
+
+    const prevBtn = document.getElementById('prevPageBtn');
+    const nextBtn = document.getElementById('nextPageBtn');
+
+    if (prevBtn) {
+        prevBtn.addEventListener('click', async () => {
+            if (currentPage > 1) {
+                currentPage--;
+                await fetchBranches();
+                filterBranches();
+                document.querySelector('.search-section').scrollIntoView({ behavior: 'smooth' });
+            }
+        });
+    }
+
+    if (nextBtn) {
+        nextBtn.addEventListener('click', async () => {
+            if ((currentPage * PAGE_SIZE) < totalBranches) {
+                currentPage++;
+                await fetchBranches();
+                filterBranches();
+                document.querySelector('.search-section').scrollIntoView({ behavior: 'smooth' });
+            }
+        });
+    }
 
     modalClose.addEventListener('click', closeModal);
     branchModal.addEventListener('click', (e) => {
