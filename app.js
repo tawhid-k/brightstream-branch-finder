@@ -1,13 +1,14 @@
 const API_URL = 'https://cg.optimizely.com/content/v2?auth=iQEyR1jR1cBG5mnLQoRotCyNmKUgaO0DT5cRbJPKA3oZGGQo';
 
-
-// GRAPHQL_QUERY is now generated dynamically inside fetchBranches
-
 let currentPage = 1;
 const PAGE_SIZE = 30;
 let totalBranches = 0;
 
 let allBranches = [];
+let allMapBranches = [];
+let isBackgroundFetchComplete = false;
+let currentSearchQuery = '';
+
 let map = null;
 let markersGroup = null;
 let userLocation = null;
@@ -31,6 +32,7 @@ async function initApp() {
         await fetchBranches();
         renderBranches(allBranches);
         setupEventListeners();
+        fetchAllBranchesBackground();
     } catch (error) {
         console.error("Error initializing app:", error);
         showErrorState();
@@ -54,9 +56,15 @@ async function fetchBranches() {
     resultsCount.textContent = "Loading branches...";
 
     const skip = (currentPage - 1) * PAGE_SIZE;
+
+    let whereClause = '';
+    if (currentSearchQuery) {
+        whereClause = `, where: { _fulltext: { match: "${currentSearchQuery}" } }`;
+    }
+
     const query = `
     query {
-      Branch(limit: ${PAGE_SIZE}, skip: ${skip}) {
+      Branch(limit: ${PAGE_SIZE}, skip: ${skip}${whereClause}) {
         total
         items {
           Name
@@ -99,13 +107,92 @@ async function fetchBranches() {
     updatePaginationUI();
 }
 
+async function fetchAllBranchesBackground() {
+    try {
+        let fetchedCount = 0;
+        let total = totalBranches || 1000;
+
+        while (fetchedCount < total) {
+            const query = `
+            query {
+              Branch(limit: 100, skip: ${fetchedCount}) {
+                total
+                items {
+                  Name
+                  City
+                  Street
+                  Coordinates
+                  Phone
+                  Email
+                }
+              }
+            }
+            `;
+            const response = await fetch(API_URL, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ query: query })
+            });
+            const { data } = await response.json();
+            if (data && data.Branch && data.Branch.items) {
+                const items = data.Branch.items;
+                allMapBranches.push(...items);
+                fetchedCount += items.length;
+                total = data.Branch.total || total;
+
+                if (!currentSearchQuery && !userLocation) {
+                    updateMapMarkers(allMapBranches);
+                }
+
+                if (items.length < 100) {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        isBackgroundFetchComplete = true;
+        filterMapMarkers();
+    } catch (e) {
+        console.error("Background fetch failed", e);
+    }
+}
+
+function filterMapMarkers() {
+    if (!isBackgroundFetchComplete && allMapBranches.length === 0) {
+        updateMapMarkers(allBranches);
+        return;
+    }
+
+    let branchesToShow = allMapBranches;
+
+    if (currentSearchQuery) {
+        const query = currentSearchQuery.toLowerCase();
+        branchesToShow = allMapBranches.filter(branch => {
+            const nameMatch = branch.Name && branch.Name.toLowerCase().includes(query);
+            const cityMatch = branch.City && branch.City.toLowerCase().includes(query);
+            const streetMatch = branch.Street && branch.Street.toLowerCase().includes(query);
+            return nameMatch || cityMatch || streetMatch;
+        });
+    }
+
+    updateMapMarkers(branchesToShow);
+}
+
 function updatePaginationUI() {
     const prevBtn = document.getElementById('prevPageBtn');
     const nextBtn = document.getElementById('nextPageBtn');
 
     if (prevBtn && nextBtn) {
         prevBtn.disabled = currentPage === 1;
-        nextBtn.disabled = (currentPage * PAGE_SIZE) >= totalBranches;
+        if (userLocation) {
+            const total = allMapBranches.length || totalBranches;
+            nextBtn.disabled = (currentPage * PAGE_SIZE) >= total;
+        } else {
+            nextBtn.disabled = (currentPage * PAGE_SIZE) >= totalBranches;
+        }
     }
 }
 
@@ -121,13 +208,23 @@ function renderBranches(branches) {
                 <p>Try adjusting your search terms.</p>
             </div>
         `;
-        updateMapMarkers([]);
+        if (currentSearchQuery) {
+            filterMapMarkers();
+        } else {
+            updateMapMarkers([]);
+        }
         return;
     }
 
-    const query = searchInput.value.toLowerCase().trim();
-    if (query || userLocation) {
-        resultsCount.textContent = `Showing ${branches.length} branch${branches.length !== 1 ? 'es' : ''}`;
+    if (userLocation) {
+        const start = (currentPage - 1) * PAGE_SIZE + 1;
+        const end = Math.min(currentPage * PAGE_SIZE, allMapBranches.length || allBranches.length);
+        const total = allMapBranches.length || totalBranches;
+        resultsCount.textContent = `Showing nearest branches (${start}–${end} of ${total})`;
+    } else if (currentSearchQuery) {
+        const start = (currentPage - 1) * PAGE_SIZE + 1;
+        const end = Math.min(currentPage * PAGE_SIZE, totalBranches);
+        resultsCount.textContent = `Showing search results (${start}–${end} of ${totalBranches})`;
     } else {
         const start = (currentPage - 1) * PAGE_SIZE + 1;
         const end = Math.min(currentPage * PAGE_SIZE, totalBranches);
@@ -181,7 +278,7 @@ function renderBranches(branches) {
         branchList.appendChild(card);
     });
 
-    updateMapMarkers(branches);
+    filterMapMarkers();
 }
 
 function updateMapMarkers(branches) {
@@ -257,11 +354,13 @@ function openBranchModal(branch) {
 
 function setupEventListeners() {
     searchInput.addEventListener('keyup', (e) => {
-        filterBranches();
+        if (e.key === 'Enter') {
+            performSearch();
+        }
     });
 
     searchBtn.addEventListener('click', () => {
-        filterBranches();
+        performSearch();
     });
 
     locateBtn.addEventListener('click', handleGeolocation);
@@ -276,8 +375,15 @@ function setupEventListeners() {
         prevBtn.addEventListener('click', async () => {
             if (currentPage > 1) {
                 currentPage--;
-                await fetchBranches();
-                filterBranches();
+                if (userLocation) {
+                    const branchesToProcess = allMapBranches.length > 0 ? allMapBranches : allBranches;
+                    const nearest = branchesToProcess.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+                    renderBranches(nearest);
+                    updatePaginationUI();
+                } else {
+                    await fetchBranches();
+                    renderBranches(allBranches);
+                }
                 document.querySelector('.search-section').scrollIntoView({ behavior: 'smooth' });
             }
         });
@@ -285,10 +391,18 @@ function setupEventListeners() {
 
     if (nextBtn) {
         nextBtn.addEventListener('click', async () => {
-            if ((currentPage * PAGE_SIZE) < totalBranches) {
+            const total = userLocation ? (allMapBranches.length || totalBranches) : totalBranches;
+            if ((currentPage * PAGE_SIZE) < total) {
                 currentPage++;
-                await fetchBranches();
-                filterBranches();
+                if (userLocation) {
+                    const branchesToProcess = allMapBranches.length > 0 ? allMapBranches : allBranches;
+                    const nearest = branchesToProcess.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+                    renderBranches(nearest);
+                    updatePaginationUI();
+                } else {
+                    await fetchBranches();
+                    renderBranches(allBranches);
+                }
                 document.querySelector('.search-section').scrollIntoView({ behavior: 'smooth' });
             }
         });
@@ -328,9 +442,7 @@ function switchView(view) {
         if (map) {
             setTimeout(() => {
                 map.invalidateSize();
-                if (allBranches.length > 0) {
-                    updateMapMarkers(allBranches.filter(b => b.hidden !== true)); // filter applied
-                }
+                filterMapMarkers();
             }, 10);
         }
     }
@@ -350,9 +462,14 @@ function handleGeolocation() {
                 lat: position.coords.latitude,
                 lng: position.coords.longitude
             };
+            currentSearchQuery = '';
+            searchInput.value = '';
+            currentPage = 1;
+
+            const branchesToProcess = allMapBranches.length > 0 ? allMapBranches : allBranches;
 
             // Calculate distances
-            allBranches.forEach(branch => {
+            branchesToProcess.forEach(branch => {
                 if (branch.Coordinates) {
                     const [lat, lng] = branch.Coordinates.split(',');
                     branch.distance = calculateHaversineDistance(
@@ -363,7 +480,7 @@ function handleGeolocation() {
             });
 
             // Sort by distance
-            allBranches.sort((a, b) => {
+            branchesToProcess.sort((a, b) => {
                 if (a.distance === undefined) return 1;
                 if (b.distance === undefined) return -1;
                 return a.distance - b.distance;
@@ -386,7 +503,9 @@ function handleGeolocation() {
                     .bindPopup("You are here").openPopup();
             }
 
-            filterBranches();
+            const nearest = branchesToProcess.slice(0, PAGE_SIZE);
+            renderBranches(nearest);
+            updatePaginationUI();
         },
         (error) => {
             console.error("Error getting location:", error);
@@ -408,24 +527,16 @@ function calculateHaversineDistance(lat1, lon1, lat2, lon2) {
     return R * c;
 }
 
-function filterBranches() {
-    const query = searchInput.value.toLowerCase().trim();
-    if (!query) {
+async function performSearch() {
+    const query = searchInput.value.trim();
+    if (query !== currentSearchQuery || (!query && currentSearchQuery)) {
+        currentSearchQuery = query;
+        currentPage = 1;
+        userLocation = null;
+        await fetchBranches();
         renderBranches(allBranches);
-        return;
+        filterMapMarkers();
     }
-
-    const filtered = allBranches.filter(branch => {
-        const nameMatch = branch.Name && branch.Name.toLowerCase().includes(query);
-        const cityMatch = branch.City && branch.City.toLowerCase().includes(query);
-        const streetMatch = branch.Street && branch.Street.toLowerCase().includes(query);
-
-        const isMatch = nameMatch || cityMatch || streetMatch;
-        branch.hidden = !isMatch;
-        return isMatch;
-    });
-
-    renderBranches(filtered);
 }
 
 function showErrorState() {
