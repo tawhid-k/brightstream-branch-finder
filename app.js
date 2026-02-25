@@ -6,6 +6,7 @@ let totalBranches = 0;
 
 let allBranches = [];
 let allMapBranches = [];
+let filteredBranches = []; // Stores current search results when background fetch is complete
 let isBackgroundFetchComplete = false;
 let currentSearchQuery = '';
 
@@ -143,6 +144,7 @@ async function fetchAllBranchesBackground() {
                 total = data.Branch.total || total;
 
                 if (!currentSearchQuery && !userLocation) {
+                    filteredBranches = allMapBranches; // Default no-search state
                     updateMapMarkers(allMapBranches);
                 }
 
@@ -187,8 +189,11 @@ function updatePaginationUI() {
 
     if (prevBtn && nextBtn) {
         prevBtn.disabled = currentPage === 1;
-        if (userLocation) {
-            const total = allMapBranches.length || totalBranches;
+
+        if (isBackgroundFetchComplete) {
+            nextBtn.disabled = (currentPage * PAGE_SIZE) >= filteredBranches.length;
+        } else if (userLocation) {
+            const total = allMapBranches.length > 0 ? allMapBranches.length : totalBranches;
             nextBtn.disabled = (currentPage * PAGE_SIZE) >= total;
         } else {
             nextBtn.disabled = (currentPage * PAGE_SIZE) >= totalBranches;
@@ -218,17 +223,28 @@ function renderBranches(branches) {
 
     if (userLocation) {
         const start = (currentPage - 1) * PAGE_SIZE + 1;
-        const end = Math.min(currentPage * PAGE_SIZE, allMapBranches.length || allBranches.length);
-        const total = allMapBranches.length || totalBranches;
+        const end = Math.min(currentPage * PAGE_SIZE, filteredBranches.length || allMapBranches.length || allBranches.length);
+        const total = filteredBranches.length || allMapBranches.length || totalBranches;
         resultsCount.textContent = `Showing nearest branches (${start}–${end} of ${total})`;
-    } else if (currentSearchQuery) {
+    } else if (isBackgroundFetchComplete) {
         const start = (currentPage - 1) * PAGE_SIZE + 1;
-        const end = Math.min(currentPage * PAGE_SIZE, totalBranches);
-        resultsCount.textContent = `Showing search results (${start}–${end} of ${totalBranches})`;
+        const end = Math.min(currentPage * PAGE_SIZE, filteredBranches.length);
+
+        if (currentSearchQuery) {
+            resultsCount.textContent = `Showing search results (${start}–${end} of ${filteredBranches.length})`;
+        } else {
+            resultsCount.textContent = `Showing ${start}–${end} of ${filteredBranches.length} branches`;
+        }
     } else {
-        const start = (currentPage - 1) * PAGE_SIZE + 1;
-        const end = Math.min(currentPage * PAGE_SIZE, totalBranches);
-        resultsCount.textContent = `Showing ${start}–${end} of ${totalBranches} branches`;
+        if (currentSearchQuery) {
+            const start = (currentPage - 1) * PAGE_SIZE + 1;
+            const end = Math.min(currentPage * PAGE_SIZE, totalBranches);
+            resultsCount.textContent = `Showing search results (${start}–${end} of ${totalBranches})`;
+        } else {
+            const start = (currentPage - 1) * PAGE_SIZE + 1;
+            const end = Math.min(currentPage * PAGE_SIZE, totalBranches);
+            resultsCount.textContent = `Showing ${start}–${end} of ${totalBranches} branches`;
+        }
     }
 
     branches.forEach(branch => {
@@ -375,15 +391,17 @@ function setupEventListeners() {
         prevBtn.addEventListener('click', async () => {
             if (currentPage > 1) {
                 currentPage--;
-                if (userLocation) {
-                    const branchesToProcess = allMapBranches.length > 0 ? allMapBranches : allBranches;
-                    const nearest = branchesToProcess.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
-                    renderBranches(nearest);
+
+                if (isBackgroundFetchComplete || userLocation) {
+                    const branchesToProcess = isBackgroundFetchComplete ? filteredBranches : (allMapBranches.length > 0 ? allMapBranches : allBranches);
+                    const slice = branchesToProcess.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+                    renderBranches(slice);
                     updatePaginationUI();
                 } else {
                     await fetchBranches();
                     renderBranches(allBranches);
                 }
+
                 document.querySelector('.search-section').scrollIntoView({ behavior: 'smooth' });
             }
         });
@@ -391,18 +409,26 @@ function setupEventListeners() {
 
     if (nextBtn) {
         nextBtn.addEventListener('click', async () => {
-            const total = userLocation ? (allMapBranches.length || totalBranches) : totalBranches;
+            let total = totalBranches;
+            if (isBackgroundFetchComplete) {
+                total = filteredBranches.length;
+            } else if (userLocation) {
+                total = allMapBranches.length || totalBranches;
+            }
+
             if ((currentPage * PAGE_SIZE) < total) {
                 currentPage++;
-                if (userLocation) {
-                    const branchesToProcess = allMapBranches.length > 0 ? allMapBranches : allBranches;
-                    const nearest = branchesToProcess.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
-                    renderBranches(nearest);
+
+                if (isBackgroundFetchComplete || userLocation) {
+                    const branchesToProcess = isBackgroundFetchComplete ? filteredBranches : (allMapBranches.length > 0 ? allMapBranches : allBranches);
+                    const slice = branchesToProcess.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+                    renderBranches(slice);
                     updatePaginationUI();
                 } else {
                     await fetchBranches();
                     renderBranches(allBranches);
                 }
+
                 document.querySelector('.search-section').scrollIntoView({ behavior: 'smooth' });
             }
         });
@@ -486,6 +512,8 @@ function handleGeolocation() {
                 return a.distance - b.distance;
             });
 
+            filteredBranches = branchesToProcess; // Cache locally
+
             locateBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="3 11 22 2 13 21 11 13 3 11"></polygon></svg>';
 
             // Pan map to user
@@ -533,9 +561,31 @@ async function performSearch() {
         currentSearchQuery = query;
         currentPage = 1;
         userLocation = null;
-        await fetchBranches();
-        renderBranches(allBranches);
-        filterMapMarkers();
+
+        if (isBackgroundFetchComplete) {
+            // Local fallback filter since background fetched EVERYTHING
+            const queryLower = currentSearchQuery.toLowerCase();
+            if (queryLower) {
+                filteredBranches = allMapBranches.filter(branch => {
+                    const nameMatch = branch.Name && branch.Name.toLowerCase().includes(queryLower);
+                    const cityMatch = branch.City && branch.City.toLowerCase().includes(queryLower);
+                    const streetMatch = branch.Street && branch.Street.toLowerCase().includes(queryLower);
+                    return nameMatch || cityMatch || streetMatch;
+                });
+            } else {
+                filteredBranches = allMapBranches;
+            }
+
+            renderBranches(filteredBranches.slice(0, PAGE_SIZE));
+            updatePaginationUI();
+            updateMapMarkers(filteredBranches);
+
+        } else {
+            // Background is not fully loaded, perform server side search natively
+            await fetchBranches();
+            renderBranches(allBranches);
+            filterMapMarkers();
+        }
     }
 }
 
